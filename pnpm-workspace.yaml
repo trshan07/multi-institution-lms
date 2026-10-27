@@ -1,0 +1,9 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# Only the native/build packages used by this starter may run install scripts.
+onlyBuiltDependencies:
+  - '@nestjs/core'
+  - esbuild
+  - sharp

@@ -1,0 +1,748 @@
+# Multi-Institution SaaS LMS — Technical Architecture Specification
+
+Version 1.0 · Moodle-inspired · Multi-tenant SaaS · Enterprise architecture
+
+Your LMS will be a multi-institution Software-as-a-Service (SaaS) platform, where schools, universities, training institutes, and online academies can operate their own learning environments within one shared platform.
+
+The most important architectural decision is that each institution must experience the LMS as its own independent system, even when the underlying application infrastructure is shared.
+
+For example:
+
+Your LMS SaaS Platform
+
+Shared infrastructure · Central platform administration
+
+University A
+
+university-a.lms.com
+
+School B
+
+school-b.lms.com
+
+Academy C
+
+academy-c.lms.com
+
+Each institution has its own users, courses, enrollments, files, branding, permissions, and academic configuration.
+
+My recommendation is a control-plane/data-plane architecture, using a modular monolith for the core LMS and independently scalable workers for media processing, background tasks, and integrations.
+
+## 1. Key architecture decisions
+
+| Decision              | Recommended design                                 |
+| --------------------- | -------------------------------------------------- |
+| SaaS tenancy          | Shared application, logically isolated tenant data |
+| Tenant identification | Verified custom domain or institution subdomain    |
+| Database              | PostgreSQL with `tenant_id` and row-level security |
+| Core backend          | NestJS modular monolith                            |
+| Frontend              | Next.js portals with tenant-aware branding         |
+| Authentication        | OIDC identity provider, tenant-aware memberships   |
+| Authorization         | Contextual RBAC + attribute-based policies         |
+| Media storage         | Private S3-compatible object storage               |
+| Background jobs       | BullMQ / Redis, transactional outbox               |
+| Extension system      | Versioned learning-activity interfaces             |
+| Scaling               | Horizontal API replicas, workers, managed services |
+| Enterprise isolation  | Optional dedicated database or deployment tier     |
+
+A shared database is appropriate initially, but tenant isolation must be enforced in multiple layers—not just by adding a `WHERE tenant_id = ...` condition in application code.
+
+## 2. Control plane versus tenant data plane
+
+SaaS Control Plane
+
+Tenant provisioning
+
+Plans & billing
+
+Domains & branding
+
+Feature entitlements
+
+Global operations
+
+Tenant lifecycle
+
+Tenant LMS Data Plane
+
+Students & Staff
+
+Course Catalog
+
+Enrollment
+
+Content & Media
+
+Quizzes & Exams
+
+Assignments
+
+Grades & Progress
+
+Communication
+
+Analytics
+
+PostgreSQL
+
+Object Storage
+
+Workers / Events
+
+The control plane manages subscriptions, institutional domains, tenant provisioning, and platform operations. The data plane manages actual teaching and learning.
+
+This separation also makes it easier to move a large institution onto dedicated infrastructure later.
+
+## 3. Tenant isolation strategy
+
+I recommend three supported deployment tiers.
+
+| Tier       | Isolation model                                    | Best for                                             |
+| ---------- | -------------------------------------------------- | ---------------------------------------------------- |
+| Standard   | Shared database, shared schema, tenant-scoped rows | Small and medium institutions                        |
+| Enterprise | Dedicated tenant database, shared application      | Larger institutions                                  |
+| Dedicated  | Dedicated database and application deployment      | Institutions with contractual isolation requirements |
+
+Start with Standard, but introduce a `TenantConnectionResolver` abstraction so the application can route data access to a dedicated database later without rewriting every module.
+
+Important rules:
+
+- Tenant context is resolved from a verified domain mapping, not blindly trusted from a request header.
+- User authentication establishes identity, but membership establishes which institution the user can access.
+- All tenant-owned records contain a tenant identifier.
+- Background jobs carry a validated tenant context.
+- Object-storage keys are tenant-scoped, with access controlled by backend authorization.
+- Cache keys, rate limits, search indexes, and analytics are tenant-aware.
+- Super administrators cannot silently bypass audit controls.
+
+A user can belong to multiple institutions with different roles. For example, someone might be a lecturer at one institution and a student at another.
+
+## 4. Detailed database design and ERD
+
+Use two PostgreSQL logical schemas or databases:
+
+- `platform`: tenant registry, subscription plans, domain mappings, provisioning status, billing metadata.
+- `lms`: institution-owned academic and learning data.
+
+For the first release, these may be schemas in one managed PostgreSQL cluster. For enterprise tenants, route the `lms` workload to a dedicated database.
+
+### ERD A — SaaS platform and identity
+
+\#chatgpt-mermaid-\_r_11n\_{font-family:-apple-system-body,ui-sans-serif,-apple-system,system-ui,"Segoe UI",Helvetica,"Apple Color Emoji",Arial,sans-serif,"Segoe UI Emoji","Segoe UI Symbol";font-size:16px;fill:rgb(237, 237, 237);}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#chatgpt-mermaid-\_r_11n\_ .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#chatgpt-mermaid-\_r_11n\_ .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#chatgpt-mermaid-\_r_11n\_ .error-icon{fill:rgb(48, 48, 48);}#chatgpt-mermaid-\_r_11n\_ .error-text{fill:rgb(237, 237, 237);stroke:rgb(237, 237, 237);}#chatgpt-mermaid-\_r_11n\_ .edge-thickness-normal{stroke-width:1px;}#chatgpt-mermaid-\_r_11n\_ .edge-thickness-thick{stroke-width:3.5px;}#chatgpt-mermaid-\_r_11n\_ .edge-pattern-solid{stroke-dasharray:0;}#chatgpt-mermaid-\_r_11n\_ .edge-thickness-invisible{stroke-width:0;fill:none;}#chatgpt-mermaid-\_r_11n\_ .edge-pattern-dashed{stroke-dasharray:3;}#chatgpt-mermaid-\_r_11n\_ .edge-pattern-dotted{stroke-dasharray:2;}#chatgpt-mermaid-\_r_11n\_ .marker{fill:rgb(175, 175, 175);stroke:rgb(175, 175, 175);}#chatgpt-mermaid-\_r_11n\_ .marker.cross{stroke:rgb(175, 175, 175);}#chatgpt-mermaid-\_r_11n\_ svg{font-family:-apple-system-body,ui-sans-serif,-apple-system,system-ui,"Segoe UI",Helvetica,"Apple Color Emoji",Arial,sans-serif,"Segoe UI Emoji","Segoe UI Symbol";font-size:16px;}#chatgpt-mermaid-\_r_11n\_ p{margin:0;}#chatgpt-mermaid-\_r_11n\_ .entityBox{fill:rgb(9, 23, 44);stroke:rgb(31, 78, 148);}#chatgpt-mermaid-\_r_11n\_ .relationshipLabelBox{fill:rgb(48, 48, 48);opacity:0.7;background-color:rgb(48, 48, 48);}#chatgpt-mermaid-\_r_11n\_ .relationshipLabelBox rect{opacity:0.5;}#chatgpt-mermaid-\_r_11n\_ .labelBkg{background-color:rgba(48, 48, 48, 0.5);}#chatgpt-mermaid-\_r_11n\_ .edgeLabel{background-color:rgb(0, 0, 0);}#chatgpt-mermaid-\_r_11n\_ .edgeLabel .label rect{fill:rgb(0, 0, 0);}#chatgpt-mermaid-\_r_11n\_ .edgeLabel .label text{fill:rgb(237, 237, 237);}#chatgpt-mermaid-\_r_11n\_ .edgeLabel .label{fill:rgb(31, 78, 148);font-size:14px;}#chatgpt-mermaid-\_r_11n\_ .label{font-family:-apple-system-body,ui-sans-serif,-apple-system,system-ui,"Segoe UI",Helvetica,"Apple Color Emoji",Arial,sans-serif,"Segoe UI Emoji","Segoe UI Symbol";color:rgb(237, 237, 237);}#chatgpt-mermaid-\_r_11n\_ .edge-pattern-dashed{stroke-dasharray:8,8;}#chatgpt-mermaid-\_r_11n\_ .node rect,#chatgpt-mermaid-\_r_11n\_ .node circle,#chatgpt-mermaid-\_r_11n\_ .node ellipse,#chatgpt-mermaid-\_r_11n\_ .node polygon{fill:rgb(9, 23, 44);stroke:rgb(31, 78, 148);stroke-width:1px;}#chatgpt-mermaid-\_r_11n\_ .relationshipLine{stroke:rgb(175, 175, 175);stroke-width:1px;fill:none;}#chatgpt-mermaid-\_r_11n\_ .marker{fill:none!important;stroke:rgb(175, 175, 175)!important;stroke-width:1;}#chatgpt-mermaid-\_r_11n\_ [data-look=neo].labelBkg{background-color:rgba(48, 48, 48, 0.5);}#chatgpt-mermaid-\_r_11n\_ .node .neo-node{stroke:rgb(31, 78, 148);}#chatgpt-mermaid-\_r_11n\_ [data-look="neo"].node rect,#chatgpt-mermaid-\_r_11n\_ [data-look="neo"].cluster rect,#chatgpt-mermaid-\_r_11n\_ [data-look="neo"].node polygon{stroke:url(#chatgpt-mermaid-\_r_11n\_-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-\_r_11n\_ [data-look="neo"].swimlane.cluster rect{filter:none;}#chatgpt-mermaid-\_r_11n\_ [data-look="neo"].node path{stroke:url(#chatgpt-mermaid-\_r_11n\_-gradient);stroke-width:1px;}#chatgpt-mermaid-\_r_11n\_ [data-look="neo"].node .outer-path{filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-\_r_11n\_ [data-look="neo"].node .neo-line path{stroke:rgb(31, 78, 148);filter:none;}#chatgpt-mermaid-\_r_11n\_ [data-look="neo"].node circle{stroke:url(#chatgpt-mermaid-\_r_11n\_-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-\_r_11n\_ [data-look="neo"].node circle .state-start{fill:#000000;}#chatgpt-mermaid-\_r_11n\_ [data-look="neo"].icon-shape .icon{fill:url(#chatgpt-mermaid-\_r_11n\_-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-\_r_11n\_ [data-look="neo"].icon-shape .icon-neo path{stroke:url(#chatgpt-mermaid-\_r_11n\_-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-\_r_11n\_ :root{--mermaid-font-family:-apple-system-body,ui-sans-serif,-apple-system,system-ui,"Segoe UI",Helvetica,"Apple Color Emoji",Arial,sans-serif,"Segoe UI Emoji","Segoe UI Symbol";}TENANTSuuididPKstringslugUKstringnamestringstatusstringisolation_tiertimestampcreated_atTENANT_DOMAINSuuididPKuuidtenant_idFKstringhostnameUKbooleanverifiedTENANT_MEMBERSHIPSuuididPKuuidtenant_idFKuuiduser_idFKstringstatustimestampjoined_atUSERSuuididPKstringidentity_subjectUKstringemailstringdisplay_nameSUBSCRIPTIONSuuididPKuuidtenant_idFKuuidplan_idFKstringstatusPLANSuuididPKstringcodeUKjsonblimitsTENANT_SETTINGSuuididPKuuidtenant_idFKstringsetting_keyjsonbvalueINSTITUTION_UNITSuuididPKuuidtenant_idFKuuidparent_idFKstringnameownshasbelongssubscribesdefinesconfiguresorganizes
+
+Use a global user identity so the same person can join multiple institutions without duplicating credentials. Institution-specific identifiers, such as admission numbers or employee numbers, belong in tenant-scoped profiles.
+
+### ERD B — Courses and enrollment
+
+\#chatgpt-mermaid-\_r_121\_{font-family:-apple-system-body,ui-sans-serif,-apple-system,system-ui,"Segoe UI",Helvetica,"Apple Color Emoji",Arial,sans-serif,"Segoe UI Emoji","Segoe UI Symbol";font-size:16px;fill:rgb(237, 237, 237);}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#chatgpt-mermaid-\_r_121\_ .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#chatgpt-mermaid-\_r_121\_ .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#chatgpt-mermaid-\_r_121\_ .error-icon{fill:rgb(48, 48, 48);}#chatgpt-mermaid-\_r_121\_ .error-text{fill:rgb(237, 237, 237);stroke:rgb(237, 237, 237);}#chatgpt-mermaid-\_r_121\_ .edge-thickness-normal{stroke-width:1px;}#chatgpt-mermaid-\_r_121\_ .edge-thickness-thick{stroke-width:3.5px;}#chatgpt-mermaid-\_r_121\_ .edge-pattern-solid{stroke-dasharray:0;}#chatgpt-mermaid-\_r_121\_ .edge-thickness-invisible{stroke-width:0;fill:none;}#chatgpt-mermaid-\_r_121\_ .edge-pattern-dashed{stroke-dasharray:3;}#chatgpt-mermaid-\_r_121\_ .edge-pattern-dotted{stroke-dasharray:2;}#chatgpt-mermaid-\_r_121\_ .marker{fill:rgb(175, 175, 175);stroke:rgb(175, 175, 175);}#chatgpt-mermaid-\_r_121\_ .marker.cross{stroke:rgb(175, 175, 175);}#chatgpt-mermaid-\_r_121\_ svg{font-family:-apple-system-body,ui-sans-serif,-apple-system,system-ui,"Segoe UI",Helvetica,"Apple Color Emoji",Arial,sans-serif,"Segoe UI Emoji","Segoe UI Symbol";font-size:16px;}#chatgpt-mermaid-\_r_121\_ p{margin:0;}#chatgpt-mermaid-\_r_121\_ .entityBox{fill:rgb(9, 23, 44);stroke:rgb(31, 78, 148);}#chatgpt-mermaid-\_r_121\_ .relationshipLabelBox{fill:rgb(48, 48, 48);opacity:0.7;background-color:rgb(48, 48, 48);}#chatgpt-mermaid-\_r_121\_ .relationshipLabelBox rect{opacity:0.5;}#chatgpt-mermaid-\_r_121\_ .labelBkg{background-color:rgba(48, 48, 48, 0.5);}#chatgpt-mermaid-\_r_121\_ .edgeLabel{background-color:rgb(0, 0, 0);}#chatgpt-mermaid-\_r_121\_ .edgeLabel .label rect{fill:rgb(0, 0, 0);}#chatgpt-mermaid-\_r_121\_ .edgeLabel .label text{fill:rgb(237, 237, 237);}#chatgpt-mermaid-\_r_121\_ .edgeLabel .label{fill:rgb(31, 78, 148);font-size:14px;}#chatgpt-mermaid-\_r_121\_ .label{font-family:-apple-system-body,ui-sans-serif,-apple-system,system-ui,"Segoe UI",Helvetica,"Apple Color Emoji",Arial,sans-serif,"Segoe UI Emoji","Segoe UI Symbol";color:rgb(237, 237, 237);}#chatgpt-mermaid-\_r_121\_ .edge-pattern-dashed{stroke-dasharray:8,8;}#chatgpt-mermaid-\_r_121\_ .node rect,#chatgpt-mermaid-\_r_121\_ .node circle,#chatgpt-mermaid-\_r_121\_ .node ellipse,#chatgpt-mermaid-\_r_121\_ .node polygon{fill:rgb(9, 23, 44);stroke:rgb(31, 78, 148);stroke-width:1px;}#chatgpt-mermaid-\_r_121\_ .relationshipLine{stroke:rgb(175, 175, 175);stroke-width:1px;fill:none;}#chatgpt-mermaid-\_r_121\_ .marker{fill:none!important;stroke:rgb(175, 175, 175)!important;stroke-width:1;}#chatgpt-mermaid-\_r_121\_ [data-look=neo].labelBkg{background-color:rgba(48, 48, 48, 0.5);}#chatgpt-mermaid-\_r_121\_ .node .neo-node{stroke:rgb(31, 78, 148);}#chatgpt-mermaid-\_r_121\_ [data-look="neo"].node rect,#chatgpt-mermaid-\_r_121\_ [data-look="neo"].cluster rect,#chatgpt-mermaid-\_r_121\_ [data-look="neo"].node polygon{stroke:url(#chatgpt-mermaid-\_r_121\_-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-\_r_121\_ [data-look="neo"].swimlane.cluster rect{filter:none;}#chatgpt-mermaid-\_r_121\_ [data-look="neo"].node path{stroke:url(#chatgpt-mermaid-\_r_121\_-gradient);stroke-width:1px;}#chatgpt-mermaid-\_r_121\_ [data-look="neo"].node .outer-path{filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-\_r_121\_ [data-look="neo"].node .neo-line path{stroke:rgb(31, 78, 148);filter:none;}#chatgpt-mermaid-\_r_121\_ [data-look="neo"].node circle{stroke:url(#chatgpt-mermaid-\_r_121\_-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-\_r_121\_ [data-look="neo"].node circle .state-start{fill:#000000;}#chatgpt-mermaid-\_r_121\_ [data-look="neo"].icon-shape .icon{fill:url(#chatgpt-mermaid-\_r_121\_-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-\_r_121\_ [data-look="neo"].icon-shape .icon-neo path{stroke:url(#chatgpt-mermaid-\_r_121\_-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-\_r_121\_ :root{--mermaid-font-family:-apple-system-body,ui-sans-serif,-apple-system,system-ui,"Segoe UI",Helvetica,"Apple Color Emoji",Arial,sans-serif,"Segoe UI Emoji","Segoe UI Symbol";}TENANTSCOURSESuuididPKuuidtenant_idFKstringcodestringtitlestringstatusCOURSE_OFFERINGSuuididPKuuidtenant_idFKuuidcourse_idFKuuidterm_idFKtimestampstarts_attimestampends_atSECTIONSuuididPKuuidtenant_idFKuuidoffering_idFKstringtitleintsort_orderACTIVITIESuuididPKuuidtenant_idFKuuidsection_idFKstringactivity_typestringtitlejsonbconfigurationENROLLMENT_METHODSuuididPKuuidtenant_idFKuuidoffering_idFKstringstrategyjsonbsettingsENROLLMENTSuuididPKuuidtenant_idFKuuidmethod_idFKuuidoffering_idFKuuiduser_idFKstringstatustimestampenrolled_atUSERSCOHORT_ASSIGNMENTSuuididPKuuidtenant_idFKuuidcohort_idFKuuidoffering_idFKCOHORTSuuididPKuuidtenant_idFKstringnameownsscheduled_ascontainscontainssupportsproducesparticipatestargetsassigned
+
+The enrollment system must remain separate from role assignments, following a useful Moodle principle: being enrolled in a course and having a particular teaching or administrative role are different relationships.&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://docs.moodle.org\&sz=32)
+
+Moodle Developer Resources
+
++1
+
+
+
+### ERD C — Assessments, submissions and grades
+
+\#chatgpt-mermaid-\_r_12j\_{font-family:-apple-system-body,ui-sans-serif,-apple-system,system-ui,"Segoe UI",Helvetica,"Apple Color Emoji",Arial,sans-serif,"Segoe UI Emoji","Segoe UI Symbol";font-size:16px;fill:rgb(237, 237, 237);}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#chatgpt-mermaid-\_r_12j\_ .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#chatgpt-mermaid-\_r_12j\_ .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#chatgpt-mermaid-\_r_12j\_ .error-icon{fill:rgb(48, 48, 48);}#chatgpt-mermaid-\_r_12j\_ .error-text{fill:rgb(237, 237, 237);stroke:rgb(237, 237, 237);}#chatgpt-mermaid-\_r_12j\_ .edge-thickness-normal{stroke-width:1px;}#chatgpt-mermaid-\_r_12j\_ .edge-thickness-thick{stroke-width:3.5px;}#chatgpt-mermaid-\_r_12j\_ .edge-pattern-solid{stroke-dasharray:0;}#chatgpt-mermaid-\_r_12j\_ .edge-thickness-invisible{stroke-width:0;fill:none;}#chatgpt-mermaid-\_r_12j\_ .edge-pattern-dashed{stroke-dasharray:3;}#chatgpt-mermaid-\_r_12j\_ .edge-pattern-dotted{stroke-dasharray:2;}#chatgpt-mermaid-\_r_12j\_ .marker{fill:rgb(175, 175, 175);stroke:rgb(175, 175, 175);}#chatgpt-mermaid-\_r_12j\_ .marker.cross{stroke:rgb(175, 175, 175);}#chatgpt-mermaid-\_r_12j\_ svg{font-family:-apple-system-body,ui-sans-serif,-apple-system,system-ui,"Segoe UI",Helvetica,"Apple Color Emoji",Arial,sans-serif,"Segoe UI Emoji","Segoe UI Symbol";font-size:16px;}#chatgpt-mermaid-\_r_12j\_ p{margin:0;}#chatgpt-mermaid-\_r_12j\_ .entityBox{fill:rgb(9, 23, 44);stroke:rgb(31, 78, 148);}#chatgpt-mermaid-\_r_12j\_ .relationshipLabelBox{fill:rgb(48, 48, 48);opacity:0.7;background-color:rgb(48, 48, 48);}#chatgpt-mermaid-\_r_12j\_ .relationshipLabelBox rect{opacity:0.5;}#chatgpt-mermaid-\_r_12j\_ .labelBkg{background-color:rgba(48, 48, 48, 0.5);}#chatgpt-mermaid-\_r_12j\_ .edgeLabel{background-color:rgb(0, 0, 0);}#chatgpt-mermaid-\_r_12j\_ .edgeLabel .label rect{fill:rgb(0, 0, 0);}#chatgpt-mermaid-\_r_12j\_ .edgeLabel .label text{fill:rgb(237, 237, 237);}#chatgpt-mermaid-\_r_12j\_ .edgeLabel .label{fill:rgb(31, 78, 148);font-size:14px;}#chatgpt-mermaid-\_r_12j\_ .label{font-family:-apple-system-body,ui-sans-serif,-apple-system,system-ui,"Segoe UI",Helvetica,"Apple Color Emoji",Arial,sans-serif,"Segoe UI Emoji","Segoe UI Symbol";color:rgb(237, 237, 237);}#chatgpt-mermaid-\_r_12j\_ .edge-pattern-dashed{stroke-dasharray:8,8;}#chatgpt-mermaid-\_r_12j\_ .node rect,#chatgpt-mermaid-\_r_12j\_ .node circle,#chatgpt-mermaid-\_r_12j\_ .node ellipse,#chatgpt-mermaid-\_r_12j\_ .node polygon{fill:rgb(9, 23, 44);stroke:rgb(31, 78, 148);stroke-width:1px;}#chatgpt-mermaid-\_r_12j\_ .relationshipLine{stroke:rgb(175, 175, 175);stroke-width:1px;fill:none;}#chatgpt-mermaid-\_r_12j\_ .marker{fill:none!important;stroke:rgb(175, 175, 175)!important;stroke-width:1;}#chatgpt-mermaid-\_r_12j\_ [data-look=neo].labelBkg{background-color:rgba(48, 48, 48, 0.5);}#chatgpt-mermaid-\_r_12j\_ .node .neo-node{stroke:rgb(31, 78, 148);}#chatgpt-mermaid-\_r_12j\_ [data-look="neo"].node rect,#chatgpt-mermaid-\_r_12j\_ [data-look="neo"].cluster rect,#chatgpt-mermaid-\_r_12j\_ [data-look="neo"].node polygon{stroke:url(#chatgpt-mermaid-\_r_12j\_-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-\_r_12j\_ [data-look="neo"].swimlane.cluster rect{filter:none;}#chatgpt-mermaid-\_r_12j\_ [data-look="neo"].node path{stroke:url(#chatgpt-mermaid-\_r_12j\_-gradient);stroke-width:1px;}#chatgpt-mermaid-\_r_12j\_ [data-look="neo"].node .outer-path{filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-\_r_12j\_ [data-look="neo"].node .neo-line path{stroke:rgb(31, 78, 148);filter:none;}#chatgpt-mermaid-\_r_12j\_ [data-look="neo"].node circle{stroke:url(#chatgpt-mermaid-\_r_12j\_-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-\_r_12j\_ [data-look="neo"].node circle .state-start{fill:#000000;}#chatgpt-mermaid-\_r_12j\_ [data-look="neo"].icon-shape .icon{fill:url(#chatgpt-mermaid-\_r_12j\_-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-\_r_12j\_ [data-look="neo"].icon-shape .icon-neo path{stroke:url(#chatgpt-mermaid-\_r_12j\_-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-\_r_12j\_ :root{--mermaid-font-family:-apple-system-body,ui-sans-serif,-apple-system,system-ui,"Segoe UI",Helvetica,"Apple Color Emoji",Arial,sans-serif,"Segoe UI Emoji","Segoe UI Symbol";}ACTIVITIESASSIGNMENTSuuididPKuuidtenant_idFKuuidactivity_idFKtimestampdue_atintmax_pointsQUIZZESuuididPKuuidtenant_idFKuuidactivity_idFKinttime_limit_secondsintmax_attemptsSUBMISSIONSuuididPKuuidtenant_idFKuuidassignment_idFKuuiduser_idFKstringstatustimestampsubmitted_atUSERSQUIZ_QUESTIONSuuididPKuuidtenant_idFKuuidquiz_idFKuuidquestion_version_idFKQUESTIONSuuididPKuuidtenant_idFKuuidbank_idFKstringquestion_typeQUESTION_VERSIONSuuididPKuuidtenant_idFKuuidquestion_idFKintversionjsonbcontentQUIZ_ATTEMPTSuuididPKuuidtenant_idFKuuidquiz_idFKuuiduser_idFKstringstatustimestampstarted_atATTEMPT_ANSWERSuuididPKuuidtenant_idFKuuidattempt_idFKuuidquestion_version_idFKjsonbanswerGRADE_ITEMSuuididPKuuidtenant_idFKuuidoffering_idFKstringsource_typeGRADESuuididPKuuidtenant_idFKuuidgrade_item_idFKuuiduser_idFKdecimalscoreconfiguresconfiguresreceivescreatesincludesversionsreferenced_byreceivescontainsansweredproducesreceives
+
+These are the principal entities, not every physical table. The implementation also needs `submission_files`, `rubric_criteria`, `grade_history`, `question_banks`, `quiz_attempt_events`, and assessment-accommodation tables.
+
+### ERD D — Permissions and learning progress
+
+\#chatgpt-mermaid-\_r_12t\_{font-family:-apple-system-body,ui-sans-serif,-apple-system,system-ui,"Segoe UI",Helvetica,"Apple Color Emoji",Arial,sans-serif,"Segoe UI Emoji","Segoe UI Symbol";font-size:16px;fill:rgb(237, 237, 237);}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#chatgpt-mermaid-\_r_12t\_ .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#chatgpt-mermaid-\_r_12t\_ .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#chatgpt-mermaid-\_r_12t\_ .error-icon{fill:rgb(48, 48, 48);}#chatgpt-mermaid-\_r_12t\_ .error-text{fill:rgb(237, 237, 237);stroke:rgb(237, 237, 237);}#chatgpt-mermaid-\_r_12t\_ .edge-thickness-normal{stroke-width:1px;}#chatgpt-mermaid-\_r_12t\_ .edge-thickness-thick{stroke-width:3.5px;}#chatgpt-mermaid-\_r_12t\_ .edge-pattern-solid{stroke-dasharray:0;}#chatgpt-mermaid-\_r_12t\_ .edge-thickness-invisible{stroke-width:0;fill:none;}#chatgpt-mermaid-\_r_12t\_ .edge-pattern-dashed{stroke-dasharray:3;}#chatgpt-mermaid-\_r_12t\_ .edge-pattern-dotted{stroke-dasharray:2;}#chatgpt-mermaid-\_r_12t\_ .marker{fill:rgb(175, 175, 175);stroke:rgb(175, 175, 175);}#chatgpt-mermaid-\_r_12t\_ .marker.cross{stroke:rgb(175, 175, 175);}#chatgpt-mermaid-\_r_12t\_ svg{font-family:-apple-system-body,ui-sans-serif,-apple-system,system-ui,"Segoe UI",Helvetica,"Apple Color Emoji",Arial,sans-serif,"Segoe UI Emoji","Segoe UI Symbol";font-size:16px;}#chatgpt-mermaid-\_r_12t\_ p{margin:0;}#chatgpt-mermaid-\_r_12t\_ .entityBox{fill:rgb(9, 23, 44);stroke:rgb(31, 78, 148);}#chatgpt-mermaid-\_r_12t\_ .relationshipLabelBox{fill:rgb(48, 48, 48);opacity:0.7;background-color:rgb(48, 48, 48);}#chatgpt-mermaid-\_r_12t\_ .relationshipLabelBox rect{opacity:0.5;}#chatgpt-mermaid-\_r_12t\_ .labelBkg{background-color:rgba(48, 48, 48, 0.5);}#chatgpt-mermaid-\_r_12t\_ .edgeLabel{background-color:rgb(0, 0, 0);}#chatgpt-mermaid-\_r_12t\_ .edgeLabel .label rect{fill:rgb(0, 0, 0);}#chatgpt-mermaid-\_r_12t\_ .edgeLabel .label text{fill:rgb(237, 237, 237);}#chatgpt-mermaid-\_r_12t\_ .edgeLabel .label{fill:rgb(31, 78, 148);font-size:14px;}#chatgpt-mermaid-\_r_12t\_ .label{font-family:-apple-system-body,ui-sans-serif,-apple-system,system-ui,"Segoe UI",Helvetica,"Apple Color Emoji",Arial,sans-serif,"Segoe UI Emoji","Segoe UI Symbol";color:rgb(237, 237, 237);}#chatgpt-mermaid-\_r_12t\_ .edge-pattern-dashed{stroke-dasharray:8,8;}#chatgpt-mermaid-\_r_12t\_ .node rect,#chatgpt-mermaid-\_r_12t\_ .node circle,#chatgpt-mermaid-\_r_12t\_ .node ellipse,#chatgpt-mermaid-\_r_12t\_ .node polygon{fill:rgb(9, 23, 44);stroke:rgb(31, 78, 148);stroke-width:1px;}#chatgpt-mermaid-\_r_12t\_ .relationshipLine{stroke:rgb(175, 175, 175);stroke-width:1px;fill:none;}#chatgpt-mermaid-\_r_12t\_ .marker{fill:none!important;stroke:rgb(175, 175, 175)!important;stroke-width:1;}#chatgpt-mermaid-\_r_12t\_ [data-look=neo].labelBkg{background-color:rgba(48, 48, 48, 0.5);}#chatgpt-mermaid-\_r_12t\_ .node .neo-node{stroke:rgb(31, 78, 148);}#chatgpt-mermaid-\_r_12t\_ [data-look="neo"].node rect,#chatgpt-mermaid-\_r_12t\_ [data-look="neo"].cluster rect,#chatgpt-mermaid-\_r_12t\_ [data-look="neo"].node polygon{stroke:url(#chatgpt-mermaid-\_r_12t\_-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-\_r_12t\_ [data-look="neo"].swimlane.cluster rect{filter:none;}#chatgpt-mermaid-\_r_12t\_ [data-look="neo"].node path{stroke:url(#chatgpt-mermaid-\_r_12t\_-gradient);stroke-width:1px;}#chatgpt-mermaid-\_r_12t\_ [data-look="neo"].node .outer-path{filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-\_r_12t\_ [data-look="neo"].node .neo-line path{stroke:rgb(31, 78, 148);filter:none;}#chatgpt-mermaid-\_r_12t\_ [data-look="neo"].node circle{stroke:url(#chatgpt-mermaid-\_r_12t\_-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-\_r_12t\_ [data-look="neo"].node circle .state-start{fill:#000000;}#chatgpt-mermaid-\_r_12t\_ [data-look="neo"].icon-shape .icon{fill:url(#chatgpt-mermaid-\_r_12t\_-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-\_r_12t\_ [data-look="neo"].icon-shape .icon-neo path{stroke:url(#chatgpt-mermaid-\_r_12t\_-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#chatgpt-mermaid-\_r_12t\_ :root{--mermaid-font-family:-apple-system-body,ui-sans-serif,-apple-system,system-ui,"Segoe UI",Helvetica,"Apple Color Emoji",Arial,sans-serif,"Segoe UI Emoji","Segoe UI Symbol";}TENANTSACCESS_CONTEXTSuuididPKuuidtenant_idFKuuidparent_idFKstringcontext_typeuuidresource_idROLESuuididPKuuidtenant_idFKstringcodestringnameROLE_PERMISSIONSuuidrole_idFKuuidpermission_idFKstringeffectPERMISSIONSuuididPKstringpermission_keyUKUSERSROLE_ASSIGNMENTSuuididPKuuidtenant_idFKuuiduser_idFKuuidrole_idFKuuidcontext_idFKACTIVITY_COMPLETIONSuuididPKuuidtenant_idFKuuiduser_idFKuuidactivity_idFKstringstatustimestampcompleted_atACTIVITIESdefinesparent_ofgrantsincluded_inreceivesassignedscopescompletestracked_by
+
+### Required database constraints
+
+Use UUID primary keys and tenant-scoped composite foreign keys for all tenant-owned relationships.
+
+Examples:
+
+```
+UNIQUE (tenant_id, course_code)
+UNIQUE (tenant_id, course_id, offering_code)
+UNIQUE (tenant_id, offering_id, user_id)
+UNIQUE (tenant_id, question_id, version)
+UNIQUE (tenant_id, user_id, activity_id)
+```
+
+For composite foreign keys, referenced tables must have matching unique constraints, such as `UNIQUE (tenant_id, id)`.
+
+Indexes should be selected from real query patterns. Common starting indexes include `(tenant_id, status)`, `(tenant_id, offering_id, user_id)`, and `(tenant_id, created_at DESC)`.
+
+### PostgreSQL row-level security
+
+Example policy:
+
+```
+ALTER TABLE lms.courses
+ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE lms.courses
+FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation
+ON lms.courses
+FOR ALL
+TO lms_runtime
+USING (
+  tenant_id =
+  NULLIF(
+    current_setting('app.tenant_id', true),
+    ''
+  )::uuid
+)
+WITH CHECK (
+  tenant_id =
+  NULLIF(
+    current_setting('app.tenant_id', true),
+    ''
+  )::uuid
+);
+```
+
+Set the tenant context only after authentication and membership verification, within the same transaction as the queries:
+
+```
+BEGIN;
+
+SELECT set_config(
+  'app.tenant_id',
+  $1,
+  true
+);
+
+-- Authorized application queries
+
+COMMIT;
+```
+
+The runtime database role must not own these tables, be a superuser, or have `BYPASSRLS`. Use separate migration and runtime roles. A connection pool must not accidentally reuse tenant context between requests.
+
+RLS is a defense-in-depth boundary; it does not replace application authorization, especially for grades, private files, and cross-course permissions. PostgreSQL documents both the policy semantics and the special privileges that can bypass them.&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://www.postgresql.org\&sz=32)
+
+PostgreSQL
+
++1
+
+
+
+## 5. Backend module boundaries
+
+Each module should own its data access, domain rules, public interfaces, and events.
+
+| Module        | Owns                                       | Public interfaces / events               |
+| ------------- | ------------------------------------------ | ---------------------------------------- |
+| Tenant        | Tenant settings, provisioning, domains     | `TenantCreated`, `TenantSuspended`       |
+| Identity      | Users, memberships, SSO mappings           | `UserJoinedTenant`                       |
+| Authorization | Roles, capabilities, contexts              | `authorize()`                            |
+| Academic      | Departments, programs, terms, cohorts      | `TermCreated`                            |
+| Course        | Catalog, offerings, sections               | `CoursePublished`                        |
+| Enrollment    | Methods, eligibility, enrollment lifecycle | `StudentEnrolled`, `EnrollmentSuspended` |
+| Content       | Activities, resources, availability        | `ActivityPublished`                      |
+| Media         | File metadata, upload sessions, scanning   | `AssetReady`                             |
+| Assessment    | Question bank, quizzes, attempts           | `QuizAttemptSubmitted`                   |
+| Assignment    | Submission lifecycle, rubrics              | `AssignmentSubmitted`                    |
+| Gradebook     | Grade items, weights, grade history        | `GradePublished`                         |
+| Progress      | Completion and mastery rules               | `CourseCompleted`                        |
+| Communication | Forums, announcements, notifications       | `NotificationRequested`                  |
+| Analytics     | Reporting projections, event aggregation   | `LearningEventRecorded`                  |
+| Integration   | LTI, SCORM, SIS, webhooks                  | `ExternalSyncCompleted`                  |
+| Billing       | Plans, quotas, subscriptions               | `SubscriptionChanged`                    |
+
+### Rules for module communication
+
+A command such as `EnrollStudent` should be handled synchronously by the Enrollment module. Once committed, it writes an outbox event that can asynchronously trigger a welcome notification, analytics update, and progress initialization.
+
+The Course module should not directly modify the Enrollment module's tables. Likewise, the Quiz module should not directly overwrite gradebook records.
+
+For critical operations, use a domain service interface:
+
+```
+interface EnrollmentService {
+  enroll(command: EnrollStudentCommand):
+    Promise<EnrollmentResult>;
+
+  suspend(command: SuspendEnrollmentCommand):
+    Promise<void>;
+
+  isActive(
+    tenantId: string,
+    offeringId: string,
+    userId: string
+  ): Promise<boolean>;
+}
+```
+
+All writes that change authoritative academic state should have a single owning module. This prevents duplicated logic and conflicting records.
+
+## 6. API design
+
+Use a versioned REST API with OpenAPI specifications, OAuth/OIDC authentication, and consistent error handling.
+
+Base endpoint:
+
+`https://api.yourlms.com/v1`
+
+Tenant selection should come from the verified hostname and authenticated membership. For a central API domain, use a validated tenant-selection mechanism bound to the session or token, rather than accepting arbitrary tenant IDs.
+
+### Core API endpoints
+
+| Method | Endpoint                              | Purpose                       |
+| ------ | ------------------------------------- | ----------------------------- |
+| POST   | `/platform/tenants`                   | Provision an institution      |
+| GET    | `/me/tenants`                         | List user's institutions      |
+| GET    | `/tenant/settings`                    | Get institution configuration |
+| PATCH  | `/tenant/settings`                    | Update branding and settings  |
+| GET    | `/users`                              | List institution users        |
+| POST   | `/users/invitations`                  | Invite staff or students      |
+| GET    | `/courses`                            | Search course catalog         |
+| POST   | `/courses`                            | Create a course               |
+| POST   | `/courses/{id}/offerings`             | Create an offering            |
+| POST   | `/offerings/{id}/enrollments`         | Enroll a student              |
+| GET    | `/offerings/{id}/participants`        | List enrolled users           |
+| POST   | `/sections/{id}/activities`           | Add a learning activity       |
+| POST   | `/media/upload-sessions`              | Start secure upload           |
+| POST   | `/assignments/{id}/submissions`       | Submit assignment             |
+| POST   | `/quizzes/{id}/attempts`              | Start quiz attempt            |
+| PUT    | `/attempts/{id}/answers/{questionId}` | Save answer                   |
+| POST   | `/attempts/{id}/submit`               | Finalize quiz                 |
+| GET    | `/offerings/{id}/gradebook`           | Retrieve authorized gradebook |
+| GET    | `/me/progress`                        | Retrieve student progress     |
+| GET    | `/reports/course-completion`          | Completion report             |
+
+Every collection endpoint should support bounded pagination and authorized filters. Mutation endpoints should support idempotency keys where duplicate requests could create duplicate records.
+
+### Example enrollment request
+
+```
+POST /v1/offerings/9b12.../enrollments
+Authorization: Bearer <access_token>
+Idempotency-Key: 49e7...
+Content-Type: application/json
+```
+
+```
+{
+  "userId": "5c8f...",
+  "method": "MANUAL",
+  "startsAt": "2027-01-15T00:00:00Z"
+}
+```
+
+A successful response:
+
+```
+{
+  "id": "enr_01J...",
+  "status": "ACTIVE",
+  "offeringId": "9b12...",
+  "userId": "5c8f...",
+  "enrolledAt": "2027-01-10T09:30:00Z"
+}
+```
+
+The server derives the tenant from the authenticated request context, checks the operator's enrollment permission, validates the student's tenant membership and offering eligibility, and commits the enrollment transaction.
+
+### Standard error contract
+
+```
+{
+  "type": "https://api.yourlms.com/problems/forbidden",
+  "title": "Forbidden",
+  "status": 403,
+  "detail": "You cannot manage enrollment for this course.",
+  "requestId": "req_01J..."
+}
+```
+
+Use HTTP Problem Details (RFC 9457), with no sensitive internal information exposed in error messages.
+
+## 7. Permission and authorization model
+
+Moodle's context-based access model is particularly suitable here. Its Access API and enrollment architecture provide a useful precedent for separating permissions from participation.&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://docs.moodle.org\&sz=32)
+
+Moodle Developer Resources
+
++1
+
+
+
+### Authorization context hierarchy
+
+Platform context
+
+SaaS operator only
+
+Institution context
+
+Institution administrator, tenant staff
+
+Department / Program context
+
+Course offering context
+
+Activity context
+
+Quiz, assignment, file, discussion
+
+### Permission matrix
+
+Default role permissions; tenant administrators can configure controlled variations.
+
+| Capability                | Tenant Admin | Teacher     | Student |
+| ------------------------- | ------------ | ----------- | ------- |
+| Manage tenant users       | ✓            | —           | —       |
+| Create courses            | ✓            | Conditional | —       |
+| Manage course content     | ✓            | ✓           | —       |
+| Enroll students           | ✓            | Conditional | —       |
+| Upload learning resources | ✓            | ✓           | —       |
+| Create quizzes            | ✓            | ✓           | —       |
+| Attempt quizzes           | —            | —           | ✓       |
+| Submit assignments        | —            | —           | ✓       |
+| Grade students            | ✓            | ✓           | —       |
+| View own grades           | Conditional  | Conditional | ✓       |
+| View course analytics     | ✓            | ✓           | —       |
+| Manage billing            | ✓            | —           | —       |
+
+The matrix is only a default policy. A teacher's capabilities are scoped to assigned courses, and a student's capabilities require valid enrollment and activity availability.
+
+### Authorization evaluation
+
+An action is allowed only when all applicable conditions are satisfied:
+
+\\[ \text{Allow} = \text{TenantValid} \land \text{MembershipActive} \land \text{CapabilityGranted} \land \text{ResourcePolicySatisfied} \\]
+
+For example, submitting an assignment additionally requires active enrollment, submission availability, and a valid deadline or accommodation.
+
+Explicit deny rules should override inherited grants. A role at a higher context may grant a capability to descendants, but never across institution boundaries.
+
+## 8. Recommended project folder structure
+
+Use a TypeScript monorepo with independently deployable applications and shared libraries.
+
+```
+
+saas-lms/
+├── apps/
+│   ├── web/                    # Student/teacher portal
+│   ├── tenant-admin/           # Institution administration
+│   ├── platform-admin/         # SaaS operator console
+│   ├── api/                    # NestJS modular monolith
+│   ├── worker/                 # Background jobs
+│   └── media-worker/           # Video and file processing
+│
+├── packages/
+│   ├── ui/                     # Shared UI components
+│   ├── api-client/             # Generated typed client
+│   ├── contracts/              # DTOs, events, API schemas
+│   ├── auth/                   # Auth helpers
+│   ├── tenant-context/         # Tenant resolution
+│   ├── observability/          # Tracing and logging
+│   └── testing/                # Test utilities
+│
+├── database/
+│   ├── migrations/
+│   ├── seeds/
+│   ├── policies/               # PostgreSQL RLS
+│   └── schema/
+│
+├── infrastructure/
+│   ├── terraform/
+│   ├── containers/
+│   ├── monitoring/
+│   └── environments/
+│
+├── docs/
+│   ├── architecture/
+│   ├── adr/                    # Architecture decisions
+│   ├── api/
+│   ├── security/
+│   └── runbooks/
+│
+└── .github/workflows/
+
+```
+
+Inside `apps/api/src/modules`, organize each bounded module consistently:
+
+```
+
+modules/
+├── tenant/
+├── identity/
+├── authorization/
+├── academic/
+├── course/
+├── enrollment/
+├── content/
+├── media/
+├── assessment/
+├── assignment/
+├── gradebook/
+├── progress/
+├── communication/
+├── analytics/
+├── integration/
+└── billing/
+
+```
+
+Each module should follow the same internal pattern:
+
+```
+
+enrollment/
+├── domain/
+│   ├── entities/
+│   ├── events/
+│   ├── policies/
+│   └── services/
+├── application/
+│   ├── commands/
+│   ├── queries/
+│   └── handlers/
+├── infrastructure/
+│   ├── persistence/
+│   └── messaging/
+├── presentation/
+│   ├── controllers/
+│   └── dto/
+├── enrollment.module.ts
+└── enrollment.spec.ts
+
+```
+
+This is a pragmatic clean/hexagonal architecture. The separation should be enforced through module import rules and tests, not merely folder naming.
+
+## 9. Production cloud deployment architecture
+
+For the initial production environment, I recommend AWS managed services as one concrete reference deployment. Equivalent designs are possible on Azure, Google Cloud, or another suitable cloud provider.
+
+Students · Teachers · Tenant Admins
+
+Browser / Mobile · HTTPS
+
+Route 53 + CloudFront + AWS WAF
+
+DNS · CDN · TLS · Edge protection
+
+Application VPC — Multi-AZ
+
+Web service
+
+Next.js containers
+
+API service
+
+NestJS containers
+
+Job workers
+
+BullMQ / Redis
+
+Media workers
+
+Transcoding / scanning
+
+RDS PostgreSQL
+
+Multi-AZ, encrypted backups
+
+ElastiCache Redis
+
+Cache, rate limits, queues
+
+Amazon S3
+
+Private tenant-scoped assets
+
+Secrets / KMS
+
+Credentials and encryption keys
+
+Operations
+
+CloudWatch · OpenTelemetry · Terraform · CI/CD · Backups · Audit
+
+### AWS service mapping
+
+| Component                   | AWS service                |
+| --------------------------- | -------------------------- |
+| DNS / domains               | Route 53                   |
+| CDN                         | CloudFront                 |
+| Web application firewall    | AWS WAF                    |
+| Load balancing              | Application Load Balancer  |
+| Container hosting           | ECS Fargate                |
+| Relational database         | RDS PostgreSQL             |
+| Redis                       | ElastiCache                |
+| Object storage              | S3                         |
+| Secrets                     | Secrets Manager            |
+| Encryption                  | KMS                        |
+| Monitoring                  | CloudWatch + OpenTelemetry |
+| Image registry              | ECR                        |
+| Event integration           | EventBridge / SQS          |
+| Infrastructure provisioning | Terraform                  |
+
+Keep application containers in private subnets, with public ingress through the load balancer. Use VPC endpoints where appropriate and tightly scoped IAM roles for each workload.
+
+For high availability, use at least two Availability Zones, redundant application replicas, database failover, health checks, and tested recovery procedures.
+
+### Event processing reliability
+
+BullMQ is suitable for initial background workloads, but important events should first be written to an outbox table within the business transaction.
+
+A dispatcher then publishes them to the queue. Consumers should be idempotent, retry transient failures, and send permanently failing jobs to a dead-letter workflow.
+
+For workloads requiring stronger queue isolation or durability, use SQS with dedicated consumer workers. Do not treat Redis cache persistence as the authoritative record of academic events.
+
+## 10. Tenant onboarding workflow
+
+1
+
+Institution registration
+
+Capture institution details, administrator identity, requested plan.
+
+2
+
+Subscription activation
+
+Validate billing or trial eligibility and allocate quotas.
+
+3
+
+Tenant provisioning
+
+Create tenant records, defaults, roles, and storage configuration.
+
+4
+
+Domain configuration
+
+Issue default subdomain, verify optional custom domain and TLS.
+
+5
+
+Administrator invitation
+
+Activate first tenant administrator through identity provider.
+
+6
+
+Academic setup
+
+Configure departments, terms, programs, cohorts, and grading policies.
+
+7
+
+Launch
+
+Enable the institution and begin monitoring onboarding health.
+
+Provisioning must be idempotent and resumable. If domain verification fails, for example, the system should not duplicate the tenant or subscription when retried.
+
+Tenant suspension should block ordinary LMS access without deleting academic records. Deletion should be a separately authorized, retention-aware process.
+
+## 11. Non-functional requirements and acceptance targets
+
+These are proposed engineering targets, subject to budget, load testing, and final service-level agreements.
+
+| Area                     | Initial target                                          |
+| ------------------------ | ------------------------------------------------------- |
+| Availability             | 99.9% monthly service availability                      |
+| API latency              | p95 under 300 ms for ordinary cached/read endpoints     |
+| Quiz answer save         | p95 under 500 ms under specified load                   |
+| Concurrent users         | Validate 1,000 initially; scale through testing         |
+| Recovery point objective | 15 minutes for critical transactional data              |
+| Recovery time objective  | 4 hours for major regional service recovery             |
+| Backup retention         | 30 days initially, adjustable by policy                 |
+| Accessibility            | WCAG 2.2 AA target                                      |
+| Security testing         | SAST, dependency scanning, DAST, penetration testing    |
+| Observability            | Tenant-aware metrics, traces, and audit logs            |
+| Data isolation           | Zero cross-tenant access in automated adversarial tests |
+
+Video playback performance must be measured separately from API latency. Concurrent exam workloads require dedicated performance tests because their traffic patterns differ from normal browsing.
+
+### Mandatory release tests
+
+Before onboarding paying institutions, verify tenant isolation across APIs, database queries, cache keys, background jobs, file URLs, and reporting exports.
+
+Also test simultaneous quiz submissions, database failover during an examination, interrupted media uploads, duplicate enrollment requests, and restoration from encrypted backups.
+
+## 12. Development priorities
+
+Recommended release sequence
+
+Release 1 — SaaS Foundation
+
+Months 1–3
+
+Tenant provisioning, identity, permissions, student management, course catalog, enrollment, media uploads.
+
+Release 2 — Teaching and Assessment
+
+Months 4–6
+
+Course content, question bank, quizzes, assignments, gradebook, completion tracking.
+
+Release 3 — Commercial Production
+
+Months 7–9
+
+Subscriptions, tenant branding, reports, operational monitoring, security hardening, load testing, pilot institutions.
+
+Release 4 — Enterprise Expansion
+
+Months 10–18+
+
+SSO, LTI, SCORM, mobile offline learning, enterprise database isolation, advanced analytics and integrations.
+
+These are indicative timelines for an experienced team, not guaranteed delivery dates. A small team may need substantially longer.
+
+## 13. Architecture decisions to finalize before coding
+
+The design is ready to move into detailed engineering, but the following decisions need explicit approval.
+
+| ID      | Decision                 | Proposed default                    |
+| ------- | ------------------------ | ----------------------------------- |
+| ADR-001 | Application architecture | Modular monolith                    |
+| ADR-002 | Tenant isolation         | Pooled PostgreSQL with RLS          |
+| ADR-003 | Tenant identity          | Global users, scoped memberships    |
+| ADR-004 | Authorization            | Contextual RBAC + resource policies |
+| ADR-005 | Course model             | Course definition + offering        |
+| ADR-006 | Assessment integrity     | Versioned questions and attempts    |
+| ADR-007 | File architecture        | Private S3 + CDN                    |
+| ADR-008 | Events                   | Transactional outbox + workers      |
+| ADR-009 | Deployment               | AWS ECS Fargate                     |
+| ADR-010 | Enterprise tier          | Dedicated database routing          |
+| ADR-011 | API contract             | REST + OpenAPI                      |
+| ADR-012 | Extension model          | Versioned plugin contracts          |
+
+These choices are consistent with established Moodle concepts and SaaS isolation patterns. AWS's SaaS guidance also supports mixing pooled and dedicated infrastructure as different institutions' requirements evolve.&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://docs.aws.amazon.com\&sz=32)
+
+AWS Documentation
+
++2
+
+
+
+### What I recommend building next
+
+The next deliverable should be an implementation-ready technical design, including complete SQL migrations, OpenAPI definitions, NestJS module scaffolding, RLS integration tests, and Terraform deployment modules.
+
+The diagrams above define the principal relationships, but a production schema still needs full columns, constraints, indexes, deletion rules, audit tables, and migration ordering.
+
+For your multi-institution SaaS LMS, I would prioritize tenant isolation, enrollment integrity, and the assessment engine before adding advanced features such as AI tutors or live-class hosting.
+
+&#x20;Create image

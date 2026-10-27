@@ -1,0 +1,4 @@
+# Canonical service definitions remain under infrastructure/containers.
+name: lms-development
+include:
+  - infrastructure/containers/compose.yml

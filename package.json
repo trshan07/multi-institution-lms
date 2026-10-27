@@ -1,0 +1,23 @@
+{
+  "name": "multi-institution-lms",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.34.8",
+  "engines": { "node": ">=22.14.0" },
+  "scripts": {
+    "dev": "turbo run dev --filter=@lms/web",
+    "dev:api": "turbo run dev --filter=@lms/api",
+    "dev:worker": "turbo run dev --filter=@lms/worker",
+    "dev:all": "turbo run dev",
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "infra:up": "docker compose up -d",
+    "infra:down": "docker compose down",
+    "db:inspect": "node database/manage.mjs inspect",
+    "db:validate": "node database/manage.mjs validate",
+    "db:migrate": "node database/manage.mjs migrate",
+    "db:verify": "node database/manage.mjs verify",
+    "db:inventory": "node database/manage.mjs inventory"
+  },
+  "devDependencies": { "typescript": "^5.9.3", "@types/node": "^22.19.0", "turbo": "^2.5.0", "pnpm": "10.34.8" }
+}
